@@ -3,6 +3,11 @@ import redis
 import requests
 import json
 import time
+import threading
+from flask import Flask, request, jsonify
+
+# Configuración inicial del servidor Flask
+app = Flask(__name__)
 
 # ==========================================
 # 1. CONFIGURACIÓN DEL ENTORNO
@@ -47,27 +52,15 @@ def on_message(client, userdata, msg):
     try:
         data = json.loads(payload)
         
-        # El tópico debería ser algo como: "yaku/telemetria/pond/1"
-        # Extraemos el ID del estanque (ej. '1') haciendo un split
-        partes_topico = msg.topic.split('/')
+        # El payload ahora se envía tal cual, porque contiene el 'deviceId' (ej: YAKU-001)
+        # El backend se encargará de buscar en su base de datos a qué 'pondId' pertenece.
         
-        # Validación básica para asegurar que el tópico tiene el formato correcto
-        if len(partes_topico) >= 4 and partes_topico[2] == "pond":
-            pond_id = int(partes_topico[3])
-            
-            # Inyectamos el pondId requerido por el Backend
-            data["pondId"] = pond_id
-            
-            # Empujar a la cola izquierda de Redis (FIFO)
-            redis_client.lpush(REDIS_QUEUE, json.dumps(data))
-            print(f"💾 [REDIS] Dato guardado en la cola local para Pond {pond_id}")
-        else:
-            print(f"⚠️ [MQTT] Tópico ignorado o formato inválido: {msg.topic}")
+        # Empujar a la cola izquierda de Redis (FIFO)
+        redis_client.lpush(REDIS_QUEUE, json.dumps(data))
+        print(f"💾 [REDIS] Dato guardado en la cola local para dispositivo {data.get('deviceId', 'Desconocido')}")
 
     except json.JSONDecodeError:
         print("⚠️ [ERROR] El payload no es un JSON válido")
-    except ValueError:
-        print("⚠️ [ERROR] ID de estanque no es un número válido")
 
 # Configurar el cliente MQTT
 mqtt_client = mqtt.Client(client_id="YakuEdgeProcessor")
@@ -113,16 +106,36 @@ def sync_to_cloud():
             time.sleep(2)
 
 # ==========================================
+# 3.5. EL PUENTE HTTP (FLASK -> MQTT)
+# ==========================================
+@app.route('/ingest', methods=['POST'])
+def ingest_http():
+    try:
+        data = request.json
+        print(f"\n🌐 [HTTP] Recibido desde Arduino: {data}")
+        # Publicamos internamente en Mosquitto simulando ser un dispositivo físico
+        mqtt_client.publish("yaku/telemetria/pond/1", json.dumps(data))
+        return jsonify({"status": "ok", "message": "Puenteado a MQTT"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+# ==========================================
 # 4. ARRANQUE DEL SISTEMA
 # ==========================================
 if __name__ == "__main__":
-    # Arrancar MQTT en un hilo secundario (no bloquea el código)
+    # Arrancar MQTT en un hilo secundario
     mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
     mqtt_client.loop_start()
     
-    # Arrancar el sincronizador de nube en el hilo principal
+    # Arrancar el sincronizador de nube en otro hilo (daemon para que muera al cerrar)
+    sync_thread = threading.Thread(target=sync_to_cloud, daemon=True)
+    sync_thread.start()
+    
+    # Arrancar el servidor web (Flask) en el hilo principal
+    print("\n🚀 [FLASK] Iniciando Servidor Puente HTTP en puerto 5000...")
     try:
-        sync_to_cloud()
+        # debug=False y use_reloader=False son necesarios para no crear múltiples clientes MQTT
+        app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
     except KeyboardInterrupt:
         print("\n🛑 Apagando el Nodo Edge...")
         mqtt_client.loop_stop()
