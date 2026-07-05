@@ -10,3 +10,18 @@ services:
     image: redis:alpine
     ports:
       - "6379:6379"
+
+
+  edge-processor:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - MQTT_BROKER=edge-mosquitto
+      - REDIS_HOST=edge-redis
+      # Cambia esta IP por la IP local real de la PC donde corre tu Monolito o Gateway
+      - API_URL=http://host.docker.internal:8080/api/v1/telemetry/manual-ingest
+    depends_on:
+      - edge-mosquitto
+      - edge-redis
+    restart: unless-stopped

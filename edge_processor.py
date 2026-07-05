@@ -114,10 +114,13 @@ def sync_to_cloud():
                 
                 if response.status_code in (200, 201):
                     print("✅ [API] Subida exitosa.")
+                elif response.status_code in (400, 422):
+                    print(f"⚠️ [API] Dato rechazado por error de negocio (HTTP {response.status_code}). Descartando...")
+                    # No se reintenta: el dato está mal o el dispositivo no está registrado
                 else:
-                    print(f"❌ [API] Rechazó el dato (HTTP {response.status_code}). Devolviendo a la cola...")
-                    # Si la API falla pero hay internet, devolvemos a la cola derecha para reintentar
-                    redis_client.rpush(REDIS_QUEUE, dato_crudo) 
+                    print(f"❌ [API] Error de servidor o red (HTTP {response.status_code}). Devolviendo a la cola...")
+                    # Si la API falla por error 5xx, devolvemos a la cola derecha para reintentar
+                    redis_client.rpush(REDIS_QUEUE, dato_crudo)
             else:
                 # Si la cola está vacía, dormimos 1 segundo para no saturar el CPU de la laptop
                 time.sleep(1)
