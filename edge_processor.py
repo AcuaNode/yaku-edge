@@ -42,12 +42,32 @@ def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print(f"✅ Conectado a Mosquitto MQTT en {MQTT_BROKER}")
         client.subscribe(MQTT_TOPIC)
+        client.subscribe("yaku/config/#")
+        client.subscribe("yaku/command/devices/#")
     else:
         print(f"❌ Fallo al conectar a MQTT. Código: {rc}")
 
 def on_message(client, userdata, msg):
     payload = msg.payload.decode("utf-8")
     print(f"\n📥 [MQTT] Recibido en tópico '{msg.topic}': {payload}")
+    
+    if msg.topic.startswith("yaku/config/thresholds/"):
+        species = msg.topic.split("/")[-1]
+        redis_client.set(f"config:species:{species}", payload)
+        print(f"⚙️ [REDIS] Configuración de umbrales guardada para especie {species}")
+        return
+        
+    if msg.topic.startswith("yaku/config/devices/"):
+        device_id = msg.topic.split("/")[-1]
+        redis_client.set(f"route:device:{device_id}", payload)
+        print(f"🔗 [REDIS] Routing guardado para dispositivo {device_id} -> {payload}")
+        return
+        
+    if msg.topic.startswith("yaku/command/devices/"):
+        device_id = msg.topic.split("/")[-1]
+        redis_client.setex(f"cmd:device:{device_id}", 30, payload)
+        print(f"⚡ [REDIS] Comando remoto guardado para {device_id} -> {payload} (Expira en 30s)")
+        return
     
     try:
         data = json.loads(payload)
@@ -79,10 +99,18 @@ def sync_to_cloud():
             
             if dato_crudo:
                 data = json.loads(dato_crudo)
-                print(f"🚀 [API] Enviando dato a la nube: {data}")
+                
+                # Map spanish keys from Arduino to english keys for the Java API
+                api_data = {
+                    "deviceId": data.get("deviceId"),
+                    "temperature": float(data.get("temperatura", 0)),
+                    "turbidity": float(data.get("turbidez", 0)),
+                    "ica": float(data.get("ica", 0)) if "ica" in data else None
+                }
+                print(f"🚀 [API] Enviando dato a la nube: {api_data}")
                 
                 # Disparar hacia la API (con un límite de 5 segundos de espera)
-                response = requests.post(API_URL, json=data, timeout=5)
+                response = requests.post(API_URL, json=api_data, timeout=5)
                 
                 if response.status_code in (200, 201):
                     print("✅ [API] Subida exitosa.")
@@ -115,6 +143,31 @@ def ingest_http():
         print(f"\n🌐 [HTTP] Recibido desde Arduino: {data}")
         # Publicamos internamente en Mosquitto simulando ser un dispositivo físico
         mqtt_client.publish("yaku/telemetria/pond/1", json.dumps(data))
+        
+        # Resolver configuración para el dispositivo
+        device_id = data.get("deviceId")
+        if device_id:
+            species = redis_client.get(f"route:device:{device_id}")
+            if species:
+                config_raw = redis_client.get(f"config:species:{species}")
+                if config_raw:
+                    try:
+                        config = json.loads(config_raw)
+                        max_temp = config.get("maxTemp", 0.0)
+                        max_turb = config.get("maxTurb", 0.0)
+                        from flask import Response
+                        response_str = f"CFG:{max_temp},{max_turb}"
+                        
+                        cmd = redis_client.get(f"cmd:device:{device_id}")
+                        if cmd:
+                            response_str += f",{cmd}"
+                            redis_client.delete(f"cmd:device:{device_id}")
+                            
+                        response_str += "\n"
+                        return Response(response_str, status=200, mimetype='text/plain')
+                    except Exception as e:
+                        print(f"⚠️ [ERROR] Parseando config JSON desde Redis: {e}")
+        
         return jsonify({"status": "ok", "message": "Puenteado a MQTT"}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
