@@ -172,6 +172,28 @@ def ingest_http():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
+@app.route('/queue', methods=['GET'])
+def get_queue():
+    try:
+        # Obtenemos todos los elementos de la lista en Redis sin borrarlos (LRANGE)
+        # 0 al -1 significa desde el primer elemento al último
+        items_raw = redis_client.lrange(REDIS_QUEUE, 0, -1)
+        items = []
+        for item in items_raw:
+            try:
+                items.append(json.loads(item))
+            except:
+                items.append(item)
+                
+        return jsonify({
+            "status": "ok", 
+            "count": len(items),
+            "queue": items
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 # ==========================================
 # 4. ARRANQUE DEL SISTEMA
 # ==========================================
