@@ -103,8 +103,8 @@ def sync_to_cloud():
                 # Map spanish keys from Arduino to english keys for the Java API
                 api_data = {
                     "deviceId": data.get("deviceId"),
-                    "temperature": float(data.get("temperature", 0)),
-                    "turbidity": float(data.get("turbidity", 0)),
+                    "temperature": float(data.get("temperatura") or data.get("temperature") or 0),
+                    "turbidity": float(data.get("turbidez") or data.get("turbidity") or 0),
                     "ica": float(data.get("ica", 0)) if "ica" in data else None
                 }
                 print(f"🚀 [API] Enviando dato a la nube: {api_data}")
